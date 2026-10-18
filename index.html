@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<meta name="referrer" content="no-referrer">
+<title>ACRM Akademi</title>
+<style id="gateStyle">
+:root{--night:#0B1A33;--navy:#16325C;--panel:#1F3A68;--ice:#A8C0E8;--red:#C8102E;--core:#E30A17;--text:#fff}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{font-family:"Inter","Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;background:var(--night);color:var(--text);-webkit-font-smoothing:antialiased}
+#gate{min-height:100%;display:grid;place-items:center;padding:24px 16px;
+  background:radial-gradient(900px 520px at 78% 22%,rgba(42,120,214,.28),transparent 60%),radial-gradient(640px 400px at 12% 105%,rgba(200,16,46,.22),transparent 60%),linear-gradient(160deg,#0f2447,var(--night) 60%)}
+.card{width:100%;max-width:420px;background:rgba(16,36,70,.82);border:1px solid rgba(168,192,232,.28);border-radius:18px;padding:30px 28px;box-shadow:0 30px 70px rgba(0,0,0,.35)}
+.brand{display:flex;align-items:center;gap:12px;font-weight:800;letter-spacing:.18em;font-size:15px}
+.dot{width:12px;height:12px;border-radius:50%;background:var(--core);box-shadow:0 0 0 5px rgba(227,10,23,.18),0 0 20px 5px rgba(227,10,23,.55)}
+#gate h1{font-size:22px;line-height:1.25;margin:22px 0 6px}
+#gate p{margin:0;color:#c9d7ee;font-size:14px;line-height:1.5}
+#gate label{display:block;font-size:12px;font-weight:700;letter-spacing:.08em;color:var(--ice);margin:22px 0 6px}
+#gate input{width:100%;height:46px;border-radius:11px;border:1px solid #2b4470;background:#0d2142;color:#fff;padding:0 14px;font:inherit;font-size:16px}
+#gate input:focus{outline:2px solid #2A6BD6;outline-offset:2px}
+#gate button{margin-top:14px;width:100%;height:46px;border:0;border-radius:11px;background:var(--red);color:#fff;font:inherit;font-weight:800;font-size:15px;letter-spacing:.04em;cursor:pointer}
+#gate button:disabled{opacity:.6;cursor:progress}
+.err{min-height:20px;margin-top:10px;font-size:13.5px;color:#ffb3bd}
+.note{margin-top:16px;font-size:12px;color:#8fa5c9}
+</style>
+</head>
+<body>
+<div id="gate">
+  <form class="card" id="f" autocomplete="off">
+    <div class="brand"><span class="dot" aria-hidden="true"></span><span>ACRM AKADEMİ</span></div>
+    <h1>Ekip içi inceleme sayfası<br><span style="color:var(--ice);font-weight:600;font-size:17px">Internal review page</span></h1>
+    <p>Videolar ve içerik şifrelidir. Devam etmek için şifreyi girin.<br>Videos and content are encrypted. Enter the password to continue.</p>
+    <label for="pw">ŞİFRE · PASSWORD</label>
+    <input id="pw" type="password" autocomplete="current-password" required>
+    <button id="go" type="submit">Giriş · Enter</button>
+    <div class="err" id="err" role="alert" aria-live="assertive"></div>
+    <div class="note">Şifre bu sekme kapanana kadar hatırlanır. · The password is remembered until this tab is closed.</div>
+  </form>
+</div>
+<script>
+(() => {
+  const CFG = { salt: 'vKUu1kSnZr/fP5lC0MZAdg==', iter: 600000, app: 'app.bin', mem: 'acrm.k' };
+  const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+  const u8b64 = u => { let s = ''; for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(s); };
+  const $ = id => document.getElementById(id);
+  let KEY = null, APP = null;
+
+  async function derive(pw) {
+    const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveKey']);
+    return crypto.subtle.deriveKey({ name: 'PBKDF2', salt: b64(CFG.salt), iterations: CFG.iter, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, true, ['decrypt']);
+  }
+  const decrypt = (key, buf) => crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf.subarray(0, 12) }, key, buf.subarray(12));
+  async function getBin(url, onBytes) {
+    const r = await fetch(url, { cache: 'force-cache' });
+    if (!r.ok) throw new Error(`${url}: ${r.status}`);
+    if (!onBytes || !r.body || !r.body.getReader) return new Uint8Array(await r.arrayBuffer());
+    const rd = r.body.getReader(); const chunks = []; let n = 0;
+    for (;;) { const { done, value } = await rd.read(); if (done) break; chunks.push(value); n += value.length; onBytes(n); }
+    const out = new Uint8Array(n); let o = 0; for (const c of chunks) { out.set(c, o); o += c.length; } return out;
+  }
+
+  // Medya: parçalar indirilir, çözülür, birleştirilir → Blob URL (son 3 video bellekte tutulur)
+  const cache = new Map(); const inflight = new Map();
+  async function media(name, onProg) {
+    if (cache.has(name)) { const u = cache.get(name); cache.delete(name); cache.set(name, u); onProg && onProg(100); return u; }
+    if (inflight.has(name)) return inflight.get(name);
+    if (APP.subs && APP.subs[name] != null) { const u = URL.createObjectURL(new Blob([APP.subs[name]], { type: 'text/vtt' })); cache.set(name, u); return u; }
+    const f = APP.files[name]; if (!f) throw new Error('yok: ' + name);
+    const p = (async () => {
+      const loaded = new Array(f.parts.length).fill(0); const out = new Array(f.parts.length);
+      const report = () => onProg && onProg(Math.min(99, 100 * loaded.reduce((a, b) => a + b, 0) / f.size));
+      let next = 0;
+      const worker = async () => { while (next < f.parts.length) { const i = next++; const buf = await getBin(`${f.parts[i].n}.bin`, b => { loaded[i] = b; report(); }); out[i] = await decrypt(KEY, buf); loaded[i] = f.parts[i].len; report(); } };
+      await Promise.all(Array.from({ length: Math.min(3, f.parts.length) }, worker));
+      const url = URL.createObjectURL(new Blob(out, { type: f.type }));
+      cache.set(name, url); onProg && onProg(100);
+      const vids = [...cache.keys()].filter(k => k.endsWith('.mp4'));
+      while (vids.length > 3) { const old = vids.shift(); URL.revokeObjectURL(cache.get(old)); cache.delete(old); }
+      return url;
+    })();
+    inflight.set(name, p);
+    try { return await p; } finally { inflight.delete(name); }
+  }
+
+  async function open(key) {
+    const app = JSON.parse(new TextDecoder().decode(await decrypt(key, await getBin(CFG.app))));
+    KEY = key; APP = app;
+    window.ACRM = { media };
+    const gs = document.getElementById('gateStyle'); if (gs) gs.remove(); // giriş ekranının stilleri uygulamaya karışmasın
+    const st = document.createElement('style'); st.textContent = app.css; document.head.appendChild(st);
+    document.body.innerHTML = app.body;
+    const sc = document.createElement('script'); sc.textContent = app.js; document.body.appendChild(sc);
+  }
+
+  async function tryRemembered() {
+    let raw = null; try { raw = sessionStorage.getItem(CFG.mem); } catch (e) { /* yok */ }
+    if (!raw) return false;
+    try { const k = await crypto.subtle.importKey('raw', b64(raw), { name: 'AES-GCM' }, true, ['decrypt']); await open(k); return true; }
+    catch (e) { try { sessionStorage.removeItem(CFG.mem); } catch (e2) { /* yok */ } return false; }
+  }
+
+  $('f').addEventListener('submit', async ev => {
+    ev.preventDefault(); const pw = $('pw').value; if (!pw) return;
+    $('go').disabled = true; $('err').textContent = ''; $('go').textContent = 'Açılıyor… · Opening…';
+    try {
+      if (!window.crypto || !crypto.subtle) throw new Error('nocrypto');
+      const key = await derive(pw); await open(key);
+      try { sessionStorage.setItem(CFG.mem, u8b64(new Uint8Array(await crypto.subtle.exportKey('raw', key)))); } catch (e) { /* yok */ }
+    } catch (e) {
+      $('go').disabled = false; $('go').textContent = 'Giriş · Enter';
+      $('err').textContent = e && e.message === 'nocrypto' ? 'Bu tarayıcı desteklenmiyor (HTTPS gerekir). · This browser is not supported (HTTPS required).'
+        : e && e.name === 'OperationError' ? 'Şifre hatalı. · Incorrect password.' : 'Sayfa yüklenemedi; bağlantınızı kontrol edip tekrar deneyin. · The page could not be loaded; check your connection and try again.';
+      $('pw').select();
+    }
+  });
+  tryRemembered().then(ok => { if (!ok) $('pw').focus(); });
+})();
+</script>
+</body>
+</html>
